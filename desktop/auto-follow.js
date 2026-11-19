@@ -1,13 +1,19 @@
 'use strict';
 const {clean}=require('../lib/diagnostic-text');
+const {subscriptionEmptyNote}=require('./ui/acquisition-feedback');
 const {conciseError}=require('../lib/terminal-report');
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const store=require('../lib/auto-follow-budget'),{storagePaths,indexRead,mappedFolder}=require('../lib/storage');
-const identity=require('../lib/subscription-key'),frequency=require('./follow-frequency'),recovery=require('./subscription-recovery');
+const identity=require('../lib/subscription-key'),frequency=require('./follow-frequency'),recovery=require('./subscription-recovery'),missing=require('./subscription-missing');
 const entryKinds=e=>e.mode==='both'?['sent','received']:[e.mode];
 function validDeadline(value){return Number.isFinite(value)&&value>0&&value<=8.64e15?value:0;}
 function ordinaryCount(value){return Number.isSafeInteger(value)&&value>0?Math.min(value,32):0;}
 const normalCliStops=new Set(['AUTO_ROUND_LIMIT','AUTO_YIELD','REQUEST_LIMIT','RETURN_LIMIT','LATEST_WINDOW_LIMIT']);
+function emptyObservation(source,requests){
+ return source?.update?.noNewBodies===true&&source.update.checkpointCommitted===true&&
+  !source.failed&&!source.dataStatus?.failed&&!source.cancelled&&(!source.stopCode||source.stopCode==='LATEST_WINDOW_LIMIT')&&
+  source.newIndependentCount===0&&source.savedIndependentCount===0&&requests.length>0&&requests.every(q=>recovery.complete(q));
+}
 function retryDue(e,kind,at){const next=Date.parse(e.directionRetry?.[kind]?.nextRetryAt);return !Number.isFinite(next)||next<=at;}
 function nextDirections(e,at){const values=entryKinds(e).map(kind=>Date.parse(e.directionRetry?.[kind]?.nextRetryAt)).filter(Number.isFinite);return values.length?Math.max(at+500,Math.min(...values)):at+1000;}
 function replanNormal(e,at,period){for(const [kind,slot]of Object.entries(e.directionRetry||{})){if(!entryKinds(e).includes(kind)||slot?.attempts!==0||slot.code||!Number.isFinite(Date.parse(slot.lastAttemptAt)))continue;slot.nextRetryAt=new Date(Math.max(at,Date.parse(slot.lastAttemptAt)+period)).toISOString();}}
@@ -36,7 +42,7 @@ function validate(input){
 }
 function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publish=()=>{},setTimer=setInterval,clearTimer=clearInterval,random=Math.random,recoverLocal=()=>{},canDispatch=()=>true,blockedDirections=()=>[]}={}){
  const file=path.join(store.directory(base),'settings.json'),lock=path.join(store.directory(base),'session.lock');
- const normalizeEntry=e=>{const value=({...e,...validate({...e,frequency:e.frequency||'adaptive'}),...(e.status==='billing-paused'?{status:e.enabled?'retry-wait':'paused',reason:e.enabled?'原费用记录保留，等待安全核对后自动继续':'订阅已暂停，可直接开启',nextCheckAt:e.enabled?new Date(now()+30000).toISOString():null}:{})});return frequency.normalize(value,now());};
+ const normalizeEntry=e=>{const value=({...e,...validate({...e,frequency:e.frequency||'adaptive'}),...(e.status==='billing-paused'?{status:e.enabled?'retry-wait':'paused',reason:e.enabled?'原费用记录保留，等待安全核对后自动继续':'订阅已暂停，可直接开启',nextCheckAt:e.enabled?new Date(now()+30000).toISOString():null}:{})});if(!value.missingBodyState)missing.observe(value,value.directions,true);return frequency.normalize(value,now());};
  let entries=[], archivedEntries=[], active=null,closed=false,owns=false,sessionLease=null,timer=null,recovered=false,startupReady=false,startupError=null,localCheckAfter=0,dispatchAfter=0,localHold=null,tickEntry=null;
  function loadSettings(){const saved=store.read(file,{schema:1,entries:[]});if(saved.schema!==1||!Array.isArray(saved.entries))throw Error('订阅设置损坏，未运行任何自动任务');archivedEntries=saved.entries.filter(entry=>entry.source&&entry.source!=='cli');
   return {...saved,entries:saved.entries.filter(entry=>!entry.source||entry.source==='cli')};
@@ -53,7 +59,7 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
  function dataDir(e){const p=storagePaths(base);return identity.kind(e)==='post'?require('../lib/storage').findPostFolder(p.postComments,e.postId||e.uid):mappedFolder(p.users,e.uid,indexRead(p.users));}
  function inbox(e){try{if(identity.kind(e)==='post'){const id=e.postId||e.uid;return {...require('../lib/post-reading-state').unreadSummary(base,id),lastComment:require('../lib/post-subscription').latest(base,id)};}return require('../lib/follow-inbox').summary(base,e.uid,e.lastNewBatchId);}catch(error){return {unread:null,lastSent:null,lastReceived:null,unavailable:true,warning:'本地未读统计暂不可用，已保存的数据保留：'+String(error.message).slice(0,200)};}}
  function dataStates(e){return (e.directions||[]).map(source=>{const result={kind:source.kind,...require('../lib/collection-result').collectionResult(source)};if(identity.kind(e)!=='user'||!['sent','received'].includes(source.kind))return result;try{const file=require('../lib/incremental').stateFile(dataDir(e),source.kind),current=require('../lib/file-view-cache').readJSON(file);if(current.uid===e.uid&&current.kind===source.kind&&current.endPolicyVersion===2)return {...result,pendingNew:!!current.pending||source.update?.protection?.pendingWindows>0,deltaConnected:!current.pending&&!(source.update?.protection?.pendingWindows>0)};}catch{}return result;});}
- function snapshot(){if(startupError)throw startupError;const at=now(),ledger=store.ledger(base);return {timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,active:active?.uid??null,entries:entries.map(e=>({...e,dataStates:dataStates(e),inbox:inbox(e),billingNotice:ledger.notice(e.uid,identity.kind(e)),today:ledger.usage(e.uid,store.localDay(at,e.timeZone),identity.kind(e)),running:!!active&&identity.matches(active,e)}))};}
+ function snapshot(){if(startupError)throw startupError;const at=now(),ledger=store.ledger(base);return {timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,active:active?.uid??null,entries:entries.map(e=>{const {missingBodyState,...display}=e;return {...display,missingNotice:missing.snapshot(e),dataStates:dataStates(e),inbox:inbox(e),billingNotice:ledger.notice(e.uid,identity.kind(e)),today:ledger.usage(e.uid,store.localDay(at,e.timeZone),identity.kind(e)),running:!!active&&identity.matches(active,e)};})};}
  const emit=()=>publish('followState',snapshot());
  function recover(){let changed=false;for(const r of store.runningRounds(base).filter(round=>!round.source||round.source==='cli')){
   let unknown=false;for(const q of r.requests||[])if(q.status==='reserved'){q.status='unknown';q.reason='上次应用退出时响应未完成，扣费待核对';unknown=true;}
@@ -66,7 +72,7 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
   if(active&&identity.matches(active,validated)&&(intent!=='save'||(old?.source||'cli')!==(validated.source||'cli')))throw Error('本次检查仍在保存，请等待完成再开启');const config={...validated,enabled},changed=!old||frequency.settingsKey(old)!==frequency.settingsKey(config);
   const e={...old,...config,intentVersion:1,createdAt:old?.createdAt||new Date(now()).toISOString(),timeZone:old?.timeZone||Intl.DateTimeFormat().resolvedOptions().timeZone};
   if(arguments.length>=3){if(retryGrant)e.serviceRetry=retryGrant;else delete e.serviceRetry;}
-  if(old&&((old.source||'cli')!==(e.source||'cli')||old.mode!==e.mode)){delete e.serviceRetry;delete e.directionRetry;}
+  if(old&&((old.source||'cli')!==(e.source||'cli')||old.mode!==e.mode)){delete e.serviceRetry;delete e.directionRetry;delete e.noNewKinds;}
   if(intent==='enable'&&e.directionRetry)for(const slot of Object.values(e.directionRetry))slot.nextRetryAt=new Date(Math.max(now()+1000,validDeadline(slot.notBefore))).toISOString();
 
   if(intent==='save'&&old){e.status=old.status;e.reason=old.reason;e.nextCheckAt=old.nextCheckAt;if((old.source||'cli')!==(e.source||'cli')){delete e.recovery;e.pauseCode=null;e.status=enabled?'waiting':'paused';e.reason=enabled?'已保存新的来源设置，等待安全检查':'由用户暂停';e.nextCheckAt=enabled?new Date(now()+1000).toISOString():null;}}else{delete e.recovery;e.status=enabled?'waiting':'paused';e.reason=enabled?'等待检查':'由用户暂停';e.nextCheckAt=enabled?new Date(now()+1000).toISOString():null;}
@@ -86,6 +92,13 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
    persist();
   }
   emit();return {uid:e.uid,targetKind:kind,today};
+ }
+ function dismissMissing(key,notice){
+  if(!acquire())throw Error('另一应用实例正在订阅，请在该窗口关闭提示');
+  const e=entries.find(e=>identity.matches(e,key));if(!e)throw Error('订阅已变化，请刷新后重试');
+  const old=e.missingBodyState;e.missingBodyState=missing.dismiss(e,notice);
+  try{persist();}catch(error){e.missingBodyState=old;throw error;}
+  emit();return {uid:e.uid,targetKind:identity.kind(e),missingNotice:missing.snapshot(e)};
  }
  function remove(uid){if(!acquire())throw Error('另一应用实例正在订阅，无法移除订阅');if(active&&identity.matches(active,uid))throw Error('请先停止该用户的检查，待响应保存后删除');entries=entries.filter(e=>!identity.matches(e,uid));persist();emit();}
  // Unsubscribe preserves all raw data, checkpoints, inbox and the spending ledger.
@@ -108,7 +121,7 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
   const allKinds=entryKinds(e),localBlocked=blockedDirections(e);
   let checked;try{checked=allKinds.every(kind=>localBlocked.includes(kind))?{blockedKinds:[],unknownKinds:[]}:recovery.inspect(base,e,dataDir(e),{excludeKinds:localBlocked});}catch(error){if(error.code!=='DATA_LOCK_BUSY')throw error;recovery.waiting(e,{id:e.lastRoundId||'',source:e.source},at,{code:'DATA_LOCK_BUSY',local:true,random});e.status='queued';e.reason='原对象正在保存，稍后自动核对；其他订阅继续';persist();emit();return;}
   const blockedKinds=[...new Set([...checked.blockedKinds,...localBlocked])];
-  e.blockedKinds=allKinds.filter(kind=>blockedKinds.includes('*')||blockedKinds.includes(kind));e.checkedKinds=[];e.checkingKinds=[];e.requestedKinds=[];e.serviceBlocks=serviceProjection(checked.serviceBlocks);e.unknownKinds=checked.unknownKinds||e.blockedKinds.filter(kind=>!e.serviceBlocks.some(value=>value.kind===kind));
+  e.blockedKinds=allKinds.filter(kind=>blockedKinds.includes('*')||blockedKinds.includes(kind));e.checkedKinds=[];e.noNewKinds=[];e.checkingKinds=[];e.requestedKinds=[];e.serviceBlocks=serviceProjection(checked.serviceBlocks);e.unknownKinds=checked.unknownKinds||e.blockedKinds.filter(kind=>!e.serviceBlocks.some(value=>value.kind===kind));
   const dueKinds=allKinds.filter(kind=>retryDue(e,kind,at)),chosenKinds=dueKinds.filter(kind=>!e.blockedKinds.includes(kind));
   {e.directionRetry??={};for(const kind of dueKinds.filter(kind=>e.blockedKinds.includes(kind))){const old=e.directionRetry[kind],attempts=Math.min(32,(old?.attempts||0)+1);e.directionRetry[kind]={...(ordinaryCount(old?.ordinaryAttempts)?{ordinaryAttempts:old.ordinaryAttempts}:{}),attempts,nextRetryAt:new Date(at+recovery.retryDelay(attempts)).toISOString(),lastAttemptAt:new Date(at).toISOString(),code:localBlocked.includes(kind)?'AUTO_FINALIZATION':e.serviceBlocks.some(value=>value.kind===kind)?'IP_GEO_DENIED':'AUTO_OUTCOME_UNKNOWN',lastRoundId:old?.lastRoundId||e.lastRoundId||''};}}
   if(!chosenKinds.length){if(e.blockedKinds.length){recovery.waiting(e,{id:e.recovery?.roundId||e.lastRoundId||'',source:e.source},at,{code:localBlocked.length?'AUTO_FINALIZATION':'AUTO_OUTCOME_UNKNOWN',local:true,random});}else{e.status='waiting';e.reason='按各方向的检查间隔等待';}e.nextCheckAt=new Date(nextDirections(e,at)).toISOString();e.directionMessage=directionMessage(e);if(e.directionMessage)e.reason=e.directionMessage;persist();emit();return;}
@@ -153,6 +166,9 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
    const serviceProof=require('../lib/subscription-service-proof'),freshService=[],restoredKinds=new Set();for(const q of r.requests){try{const rejected=serviceProof.rejection(base,dataDir(e),r,q);if(rejected)freshService.push(rejected);else if((r.serviceBlocks||[]).some(value=>value.kind===q.kind)&&serviceProof.normalResponse(dataDir(e),r,q))restoredKinds.add(q.kind);}catch(error){warning('service-rejection-projection',error);}}
    e.serviceBlocks=serviceProjection([...(r.serviceBlocks||[]).filter(value=>!restoredKinds.has(value.kind)),...freshService]);e.blockedKinds=[...new Set([...(r.blockedKinds||[]),...freshService.map(value=>value.kind)])].filter(kind=>['sent','received','post-comments'].includes(kind));e.unknownKinds=[...new Set([...(r.unknownKinds||[]),...r.requests.filter(q=>['reserved','unknown'].includes(q.status)&&!recovery.complete(q)&&!freshService.some(value=>value.requestId===q.id)).map(q=>q.kind)])].filter(kind=>['sent','received','post-comments'].includes(kind));delete e.checkingKinds;e.requestedKinds=[...new Set(r.requests.filter(q=>q.wireOutcome!=='not-sent').map(q=>q.kind))];e.checkedKinds=(summary?.sources||[]).filter(source=>!e.blockedKinds.includes(source.kind)&&(source.update?.protection?.latestSucceeded||!source.failed&&source.update?.caughtUp)).map(source=>source.kind);
    const saved=summary?.persistence?.coreSaved===true;
+   if(saved)missing.observe(e,summary.sources);
+   e.noNewKinds=saved&&!code&&!cancelled&&!safetyCode?(summary.sources||[]).filter(source=>!e.blockedKinds.includes(source.kind)&&emptyObservation(source,r.requests.filter(q=>q.kind===source.kind))).map(source=>source.kind):[];
+   e.checkedKinds=[...new Set([...e.checkedKinds,...e.noNewKinds])];
    if(saved&&!cancelled){
     const successful=(summary.sources||[]).filter(s=>!s.failed&&!s.dataStatus?.failed&&!s.cancelled&&!s.stopCode&&!e.blockedKinds.includes(s.kind)&&!e.unknownKinds.includes(s.kind)&&
      (((s.update?.protection?.latestComplete===true||s.update?.caughtUp===true&&!s.coverageUnverified&&!s.dataStatus?.coverageUnverified)&&r.requests.some(q=>q.kind===s.kind&&recovery.complete(q)))));
@@ -179,7 +195,7 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
      const prior=e.directionRetry[kind],source=summary?.sources?.find(source=>source.kind===kind),requests=r.requests.filter(q=>q.kind===kind);
      const unconfirmed=requests.some(q=>['unknown','reserved'].includes(q.status)&&!recovery.complete(q));
      const latestSucceeded=source?.update?.protection?.latestSucceeded===true;
-     const succeeded=latestSucceeded||(!unconfirmed&&!source?.failed&&!source?.dataStatus?.failed&&!source?.cancelled&&source?.update?.caughtUp===true);
+     const succeeded=e.noNewKinds.includes(kind)||latestSucceeded||(!unconfirmed&&!source?.failed&&!source?.dataStatus?.failed&&!source?.cancelled&&source?.update?.caughtUp===true);
      const failed=!succeeded&&(unconfirmed||source?.failed||source?.dataStatus?.failed||
       (source?.stopCode&&!normalCliStops.has(source.stopCode))||(!source&&(code||safetyCode&&!normalCliStops.has(safetyCode))));
      const attempts=succeeded?0:Math.min(32,(prior?.attempts||0)+(failed?1:0));
@@ -194,7 +210,7 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
      e.directionRetry[kind]={attempts,...(ordinaryAttempts?{ordinaryAttempts}:{}),...(notBefore>at?{notBefore}:{}),nextRetryAt:new Date(Math.max(at+delay,notBefore)).toISOString(),lastAttemptAt:r.finishedAt,code:failed?directionCode:succeeded?'':prior?.code||'',lastRoundId:r.id};
     }
     if(e.frequency==='adaptive'&&priorCadence!==e.effectiveInterval)replanNormal(e,at,period);
-    const healthy=(summary?.sources||[]).some(source=>source.update?.protection?.latestSucceeded||!source.failed&&!source.dataStatus?.failed&&source.update?.caughtUp);if(healthy){e.status='waiting';delete e.recovery;e.reason='本轮已完成到期方向检查；其他方向按各自恢复间隔继续';}
+    const healthy=e.noNewKinds.length||(summary?.sources||[]).some(source=>source.update?.protection?.latestSucceeded||!source.failed&&!source.dataStatus?.failed&&source.update?.caughtUp);if(healthy){e.status='waiting';delete e.recovery;e.reason=e.noNewKinds.length&&e.lastAdded===0?subscriptionEmptyNote(e):'本轮已完成到期方向检查；其他方向按各自恢复间隔继续';}
    }
    e.directionMessage=directionMessage(e);if(e.status==='waiting'&&e.directionMessage)e.reason=e.directionMessage;
    if(!e.enabled)e.nextCheckAt=null;else if(manualYield)e.nextCheckAt=new Date(Math.max(at,validDeadline(e.restUntil))).toISOString();else if(!['budget-paused','retry-wait','attention-required'].includes(e.status))e.nextCheckAt=new Date(at+plannedMinutes*60000).toISOString();
@@ -336,6 +352,6 @@ function createAutoFollow(base,{now=Date.now,isBusy=()=>false,launch=()=>{},publ
  }
  recoverStartup();
  timer=setTimer(tick,1000);timer?.unref?.();
- return {snapshot,save,resume,resetBudget,remove,unsubscribe,pause,tick,finish,prepareWorker,bindWorker,workerClosed,holdFinalization,recoverSettlement,wake,interrupt,close,release,observe,readItems,get active(){return active;}};
+ return {snapshot,save,resume,resetBudget,dismissMissing,remove,unsubscribe,pause,tick,finish,prepareWorker,bindWorker,workerClosed,holdFinalization,recoverSettlement,wake,interrupt,close,release,observe,readItems,get active(){return active;}};
 }
 module.exports={createAutoFollow,validate,nextDay};

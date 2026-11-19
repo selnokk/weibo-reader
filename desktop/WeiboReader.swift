@@ -58,21 +58,10 @@ class ReaderController: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
         guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
         return args[i + 1]
     }
-    // Resolve only the known project rename when the old directory is gone.
-    // Persist it only after the engine accepts its library snapshot below.
-    static func resolvedWorkspacePath(_ saved: String) -> String {
-        let manager = FileManager.default, old = URL(fileURLWithPath: saved).standardizedFileURL
-        guard saved.hasPrefix("/"), ["weibo-cli", "weibo_cli"].contains(old.lastPathComponent), !manager.fileExists(atPath: old.path) else { return saved }
-        let current = old.deletingLastPathComponent().appendingPathComponent("weibo-reader")
-        var isDirectory: ObjCBool = false
-        guard manager.fileExists(atPath: current.path, isDirectory: &isDirectory), isDirectory.boolValue,
-              manager.fileExists(atPath: current.appendingPathComponent("data/.layout-v2").path) else { return saved }
-        return current.path
-    }
     var workspace: String {
         if let accepted = acceptedWorkspace { return accepted }
         if let explicit = argument("--workspace") { return explicit }
-        if let saved = UserDefaults.standard.string(forKey: "workspace") { return Self.resolvedWorkspacePath(saved) }
+        if let saved = UserDefaults.standard.string(forKey: "workspace") { return saved }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("selnokk.weibo.reader").path
     }
     func applicationWillTerminate(_ notification:Notification) {feedback.finishSession()}
@@ -403,7 +392,7 @@ class ReaderController: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
     // disappear in a second list. These still pass the engine’s identity/lock checks.
     func forwardLocalDataRequest(_ body: [String: Any]) -> Bool {
         guard let action = body["action"] as? String,
-              ["localInventory", "localData", "localExport", "globalSearch", "searchPage", "searchOpen", "searchObjects", "coverageTimeline", "insightsCancel", "taskGapIgnore", "taskNoticeDismiss", "recoveryRetry", "taskFuturePreview", "taskFutureChoose", "postAuthorAvatar"].contains(action) else { return false }
+              ["localInventory", "localData", "localExport", "globalSearch", "searchPage", "searchOpen", "searchObjects", "coverageTimeline", "insightsCancel", "taskGapIgnore", "taskNoticeDismiss", "followMissingDismiss", "recoveryRetry", "taskFuturePreview", "taskFutureChoose", "postAuthorAvatar"].contains(action) else { return false }
         if action == "postAuthorAvatar" {
             guard body["workspace"] as? String == workspace, let id=body["requestId"] as? String, UUID(uuidString:id) != nil else { return true }
             if transportFailed || engineInput == nil || (engine.map{!$0.isRunning} ?? false) {
@@ -418,7 +407,7 @@ class ReaderController: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
             for key in ["requestId","workspace","uid","kind","taskId"]{if let value=body[key]{reply[key]=value}}
             feedback.capture(body);feedback.observe(reply);deliver(reply);return true
         }
-        if ["localExport", "searchOpen", "taskGapIgnore", "taskNoticeDismiss", "recoveryRetry", "taskFutureChoose"].contains(action), let id = body["requestId"] as? String { localWriters.insert(id) }
+        if ["localExport", "searchOpen", "taskGapIgnore", "taskNoticeDismiss", "followMissingDismiss", "recoveryRetry", "taskFutureChoose"].contains(action), let id = body["requestId"] as? String { localWriters.insert(id) }
         send(body)
         return true
     }
@@ -498,7 +487,7 @@ class ReaderController: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
             if smoke { smokeActions.append(["kind": "external", "url": url.absoluteString]) }
             else { openInBrowser(url, failureMessage: "无法打开微博链接") }
         case "userNoteSave", "postNoteSave", "postAdd", "postFavorite", "userAdd", "userViewed", "userProfileRetry", "userProfileDismiss", "userDeletePlan", "userDeleteConfirm", "resumeTaskPreview", "resumeTask": send(body)
-        case "pricingReference", "pricingRefresh", "manageBatch", "manageDeletePlan", "manageDeleteConfirm", "profilesRefresh", "library", "run", "stop", "login", "account", "open", "output", "favorite", "merge", "updateHistory", "retention", "cleanup", "followList", "followSave", "followConfigure", "followResume", "followPause", "followRemove", "followWake": send(body)
+        case "pricingReference", "pricingRefresh", "manageBatch", "manageDeletePlan", "manageDeleteConfirm", "profilesRefresh", "library", "run", "stop", "login", "logout", "account", "open", "output", "favorite", "merge", "updateHistory", "retention", "cleanup", "followList", "followSave", "followConfigure", "followResume", "followPause", "followRemove", "followWake": send(body)
         default: break
         }
     }

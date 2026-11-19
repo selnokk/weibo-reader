@@ -144,7 +144,7 @@ final class FeedbackDiagnostics {
         if action=="run" { origin="cli"; let mode=query["mode"] as? String ?? "none"; op=query["operation"] as? String=="account" ? "account" : query["operation"] as? String=="rank" ? "rank" : Self.operations.contains(mode) ? mode : "none" }
         else if ["localExport","localData","localInventory","globalSearch","searchOpen","coverageTimeline"].contains(action) { op=action }
         else if action.hasPrefix("exchange") { op="exchange" }
-        else if ["account","login","loginCancel"].contains(action) { origin="cli"; op="account" }
+        else if ["account","login","logout","loginCancel"].contains(action) { origin="cli"; op="account" }
         else if action.hasPrefix("follow") { origin="local"; op="subscription" }
         else if ["userNoteSave","postNoteSave"].contains(action) { op="note" }
         else if action.hasPrefix("manage") || action.hasPrefix("userDelete") || action.hasPrefix("postDelete") { op="management" }
@@ -281,7 +281,7 @@ final class FeedbackDiagnostics {
 // unknown/unsafe fields are discarded before enqueue and again on export.
 final class RuntimeLogStore {
     let directory: URL, key: Data
-    private let queue=DispatchQueue(label:"local.weibo.reader.runtime-log",qos:.utility),lock=NSLock()
+    private let queue=DispatchQueue(label:"selnokk.weibo.reader.runtime-log",qos:.utility),lock=NSLock()
     private let now:()->Date,segmentLimit:Int,totalLimit:Int,retention:TimeInterval
     private var root:Int32 = -1,descriptor:Int32 = -1,segmentBytes=0,queued=0
     private var segmentName:String?,diskBytes=0,oldestSegment:TimeInterval=0

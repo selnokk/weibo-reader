@@ -20,7 +20,7 @@ function findings(bytes, { dependency = false, denied = [] } = {}) {
     // and attribution. The explicit exclusion list still checks every byte.
     if (!dependency) {
         if ([...ascii.matchAll(homePath)].some(match => !sampleHomes.has(match[1]))) issues.push('absolute home path');
-        if ([...ascii.matchAll(email)].some(match => !safeExampleDomains.test(match[1]))) issues.push('non-example email');
+        if ([...ascii.matchAll(email)].some(match => match[0].toLowerCase() !== 'weiboreader@proton.me' && !safeExampleDomains.test(match[1]))) issues.push('non-example email');
     }
     return issues;
 }

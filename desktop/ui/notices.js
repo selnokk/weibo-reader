@@ -1,6 +1,6 @@
 "use strict";
-// Generic notices are presentation only. Explicit gap choices wait for the
-// offline persistence acknowledgment before the shared notification is hidden.
+// Gap choices and subscription counter acknowledgments await their offline
+// save before hiding. Other generic notices remain presentation only.
 (()=>{
  const dismissed=new Set(),durable=new Set(),active=new WeakMap();let context=()=>'';
  const storageKey='weibo-reader-notices-v1',persistedKey=/^list-v1:[a-f0-9]{64}$/,limit=10000,sessionLimit=512;
@@ -21,6 +21,8 @@
  async function acknowledge(options,owns){
   const candidates=await Promise.all(options.map(keysFor));if(!owns())return;
   const changed=candidates.filter(({key})=>!dismissed.has(key));if(!changed.length)return 0;
+  for(let i=0;i<candidates.length;i++)if(!dismissed.has(candidates[i].key)){if(!owns())return;await options[i].beforeDismiss?.();}
+  if(!owns())return;
   const keys=[...new Set(changed.filter(value=>value.persistent).map(value=>value.key))];
   let saved=changed.every(value=>value.persistent);
   try{if(keys.length)persist(keys);}catch{saved=false;}

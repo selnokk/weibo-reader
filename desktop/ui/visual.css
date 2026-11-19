@@ -71,6 +71,9 @@ select[data-comment-direction] option:not([value="sent"],[value="comments-sent"]
 #view-settings .settings-quiet{color:#586f8e;background:transparent;border-color:transparent}
 #view-settings .settings-quiet:hover{color:#315dc4;background:#f2f6fd}
 #view-settings .settings-quiet.danger-button{color:#b05c67}
+#view-settings .settings-account-secondary{justify-content:space-between;flex-wrap:wrap}
+#view-settings #service-logout{flex:none;white-space:nowrap;padding:8px 14px}
+#view-settings #service-logout:hover:not(:disabled){background:#fff2f4;color:#a34553}
 #view-settings .account-info{background:transparent;border:0;border-left:3px solid #dfe8fa;border-radius:0;padding:5px 0 5px 12px;margin:16px 0;color:#526782;line-height:1.8;white-space:pre-line;overflow-wrap:anywhere;word-break:normal;font-size:12px}
 #view-settings .workspace-path{border:0;background:#f6f8fc;border-radius:8px;margin:14px 0;padding:11px 13px;font-size:11px;line-height:1.6;overflow-wrap:anywhere;word-break:normal;color:#5c708c}
 .settings-secret-row{display:flex;align-items:center;gap:8px;margin:14px 0 8px}
@@ -192,7 +195,7 @@ select[data-comment-direction] option:not([value="sent"],[value="comments-sent"]
 #subscription-list .subscription-card-heading .eyebrow{display:block;min-height:0;padding-right:0;font-size:9px;margin:0 0 3px;letter-spacing:.6px}
 #subscription-list .subscription-card-heading h2{display:block;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:18px}
 #subscription-list .subscription-card-heading .field-hint{margin:4px 0 0;font-size:10px;line-height:15px;overflow-wrap:anywhere}
-#subscription-list .subscription-card-heading .status-pill{position:static;align-self:center;height:fit-content;padding:4px 7px;width:54px;text-align:center;justify-content:center;font-size:10px;white-space:nowrap}
+#subscription-list .subscription-card-heading .status-pill{position:static;align-self:center;height:fit-content;padding:4px 7px;min-width:54px;width:auto;text-align:center;justify-content:center;font-size:10px;white-space:nowrap}
 #subscription-list .subscription-facts{display:grid;align-items:center;grid-column:2;grid-row:1;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:0;padding:0;border:0;min-width:0}
 #subscription-list .subscription-facts>div{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:10px;line-height:15px}
 #subscription-list .subscription-facts strong{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}

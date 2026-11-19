@@ -16,7 +16,7 @@ function runBridge(configuration = {}) {
     const nativeWorkspaceReady=()=>!configuration.requireNativeWorkspaceAck||nativeLibraryExpected?.workspace===workspace&&nativeLibraryAccepted?.workspace===workspace&&nativeLibraryAccepted.bootstrapId===nativeLibraryExpected.bootstrapId;
     let foregroundDispatching=false;const queuedDispatch=Symbol('queued foreground'),queuedRequests=new Map();
     const pendingForeground=()=>!!manualQueue&&!foregroundDispatching;
-    function needsForeground(message){return ['workspace','userDeletePlan','userDeleteConfirm','manageDeletePlan','manageDeleteConfirm','profilesRefresh','userProfileRetry','postAuthorAvatar','userAdd','run','resumeTask','cleanup','merge','login','recoveryRetry','taskGapIgnore','taskFuturePreview','taskFutureChoose','exchangeExport','exchangeInspect','exchangeCommit'].includes(message.action)||message.action==='manageBatch'&&message.operation==='subscribe';}
+    function needsForeground(message){return ['workspace','userDeletePlan','userDeleteConfirm','manageDeletePlan','manageDeleteConfirm','profilesRefresh','userProfileRetry','postAuthorAvatar','userAdd','run','resumeTask','cleanup','merge','login','logout','recoveryRetry','taskGapIgnore','taskFuturePreview','taskFutureChoose','exchangeExport','exchangeInspect','exchangeCommit'].includes(message.action)||message.action==='manageBatch'&&message.operation==='subscribe';}
     function queueForeground(message){
         if(terminating)throw Error('正在保存并退出，未安排新的操作');
         const captured=structuredClone({...message,workspace:typeof message.workspace==='string'?message.workspace:workspace}),requestId=captured.requestId||crypto.randomUUID();captured.requestId=requestId;
@@ -326,7 +326,7 @@ function runBridge(configuration = {}) {
             job.cancelled = true;
             preparing = null;
             recordPreparation(job, '准备阶段已取消；未发起内容取数请求。');
-            publish('finished', { id: job.id, taskId: job.id, requestId: job.requestId, kind: 'collect', cancelled: true, preparation: true, code: null, reports: [] });
+            publish('finished', { id: job.id, taskId: job.id, requestId: job.requestId, kind: job.kind || 'collect', cancelled: true, preparation: true, code: null, reports: [] });
             return;
         }
         if (!active)
@@ -384,9 +384,9 @@ function runBridge(configuration = {}) {
         active = job;
         if(job.automatic&&getFollow().bindWorker)try{job.workerBinding=getFollow().bindWorker(job.id,{schema:1,pid:child.pid,pgid:child.pid,birth:require('../lib/process-lease').processBirth(child.pid),startedAt:job.startedAt});}catch(error){job.safety={code:error.code||'AUTO_WORKER_BINDING',message:clean(error.message)};job.workerBindingFailed=true;try{child.kill('SIGTERM');}catch{}job.timers.push(setTimeout(()=>{if(active===job&&!job.finalized)try{child.kill('SIGKILL');}catch{}},3000));}
         publish('started', { id: job.id, pid: child.pid, kind, query: job.query, taskId: job.id, requestId: job.requestId, automatic: job.automatic });
-        lineStream(child.stdout, line => { const message = clean(line); if (message.trim())
+        lineStream(child.stdout, line => { if(kind==='logout')return; const message = clean(line); if (message.trim())
             publish('log', { message, level: 'info', automatic: job.automatic, taskId: job.id, requestId: job.requestId }); });
-        lineStream(child.stderr, line => { const message = clean(line); if (message.trim())
+        lineStream(child.stderr, line => { if(kind==='logout'){if(line.includes('Cleared local credentials, but remote session revocation could not be confirmed.'))job.logoutLocalCleared=true;return;} const message = clean(line); if (message.trim())
             publish('log', { message, level: 'error', automatic: job.automatic, taskId: job.id, requestId: job.requestId }); });
         lineStream(child.stdio[3], line => {
             try {
@@ -427,6 +427,11 @@ function runBridge(configuration = {}) {
         child.on('close', (code, signal) => {
             if (job.finalized)
                 return;
+            if(kind==='logout'){
+                const localCleared=code===0&&!signal||job.logoutLocalCleared===true;
+                if(localCleared){accountGeneration+=1;accountState={ok:false,authenticationNeeded:true,message:'已退出登录',checkedAt:Date.now()};}
+                scopedPublish(job.workspace)('serviceLogoutResult',{taskId:job.id,requestId:job.requestId,localCleared,remoteConfirmed:code===0&&!signal});
+            }
             if(job.workerBinding)try{getFollow().workerClosed(job.id,job.workerBinding);}catch(error){job.safety={code:error.code||'AUTO_WORKER_BINDING',message:clean(error.message)};code=1;}
             if(job.workerBindingFailed)code=1;
             job.exitSignal = signal;
@@ -891,6 +896,12 @@ function runBridge(configuration = {}) {
                     publish('followBudgetResetDone',{...result,requestId:message.requestId});
                     break;
                 }
+                case 'followMissingDismiss': {
+                    if(!['user','post'].includes(message.targetKind))throw Error('订阅对象类型无效');
+                    const result=getFollow().dismissMissing(message.targetKind+':'+targetUid(message.uid),message.notice);
+                    publish('followMissingDismissed',{...result,requestId:message.requestId});
+                    break;
+                }
                 case 'followResume': {
                     const id=message.targetKind==='post'?'post:'+targetUid(message.postId||message.uid):targetUid(message.uid),service=getFollow(),entry=service.snapshot().entries.find(e=>require('../lib/subscription-key').matches(e,id));
                     requireRecovered(followRecoveryQuery(entry||message));
@@ -984,6 +995,22 @@ function runBridge(configuration = {}) {
                     if (job?.kind === 'login' && typeof message.requestId === 'string' && message.requestId && job.requestId === message.requestId) stop();
                     break;
                 }
+                case 'logout': {
+                    if(active||preparing||profileBatch)throw Error('请先等待当前任务结束');
+                    accountGeneration+=1;accountState=null;
+                    const auth={id:crypto.randomUUID(),kind:'logout',requestId:message.requestId,workspace:requestWorkspace,cancelled:false};
+                    preparing=auth;
+                    publish('preparing',{id:auth.id,taskId:auth.id,requestId:auth.requestId,kind:'logout',query:null});
+                    try{
+                        // A previous free account query may refresh credentials;
+                        // let it end before the official CLI clears this session.
+                        if(accountTask)await accountTask.promise;
+                        if(preparing!==auth||auth.cancelled||terminating||workspace!==auth.workspace)break;
+                        preparing=null;
+                        launch('logout',[cli,'auth','logout','--output','json'],null,auth);
+                    }finally{if(preparing===auth)preparing=null;}
+                    break;
+                }
                 case 'pricingReference':
                     publish('pricingReference', { ...require('./price-reference').snapshot(workspace), requestId: message.requestId });
                     break;
@@ -1002,6 +1029,7 @@ function runBridge(configuration = {}) {
                     break;
                 }
                 case 'account':
+                    if((active||preparing)?.kind==='logout')throw Error('正在退出登录，请稍后再查询');
                     lookupAccount(message.requestId).catch(error=>{accountFailure(requestWorkspace,message.requestId,error);scopedPublish(requestWorkspace)('accountLoading',{requestId:message.requestId,loading:false});});
                     break;
                 case 'open':
@@ -1081,7 +1109,7 @@ function runBridge(configuration = {}) {
             release?.();
             if(dispatch!==queuedDispatch)drainForeground();
             if(startupRequest)scopedPublish(requestWorkspace)('localWriteState',{requestId:message.requestId,busy:false});
-            if(!deferred&&(dispatch===queuedDispatch||!queuedRequests.has(message.requestId)||queuedRequests.get(message.requestId).completed)&&['localExport','searchOpen','taskGapIgnore','taskFutureChoose','taskNoticeDismiss','recoveryRetry','reportHandoff','postAuthorAvatar'].includes(message.action)&&message.requestId)scopedPublish(requestWorkspace)('localWriteState',{requestId:message.requestId,busy:false});
+            if(!deferred&&(dispatch===queuedDispatch||!queuedRequests.has(message.requestId)||queuedRequests.get(message.requestId).completed)&&['localExport','searchOpen','taskGapIgnore','taskFutureChoose','taskNoticeDismiss','followMissingDismiss','recoveryRetry','reportHandoff','postAuthorAvatar'].includes(message.action)&&message.requestId)scopedPublish(requestWorkspace)('localWriteState',{requestId:message.requestId,busy:false});
         }
     }
     return { handle, bootstrap, stop };

@@ -14,6 +14,29 @@ const files=walk(app,file=>{
 });
 const hash=f=>crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');let checked=0;
 for(const dir of ['lib','desktop'])for(const f of walk(path.join(root,dir),file=>payload.includes(path.relative(root,file)))){const rel=path.relative(root,f);assert.equal(hash(path.join(engine,rel)),hash(f),'stale bundle code '+rel);checked++;}
+assert.equal(hash(path.join(resources,'LICENSE.txt')),hash(path.join(root,'LICENSE')),'wrong project license');
+assert.equal(pkg.license,'MIT');
+const sourceNames = new Set();
+for (const item of ['lib', 'desktop', 'node_modules', 'package.json', 'weibo_cli.js', 'weibo_reader_user_guide.md']) {
+ const input = path.join(root, item);
+ if (!fs.statSync(input).isDirectory()) { sourceNames.add(item); continue; }
+ // Dependencies have relative executable symlinks; compare their link text as shipped.
+ function visit(dir) {
+  for (const entry of fs.readdirSync(dir, {withFileTypes:true})) {
+   const file = path.join(dir, entry.name), relative = path.relative(root,file);
+   if (!payload.includes(relative)) continue;
+   if (entry.isDirectory()) visit(file); else sourceNames.add(relative);
+  }
+ }
+ visit(input);
+}
+const actualNames = new Set(files.filter(f=>f.startsWith(engine+path.sep)).map(f=>path.relative(engine,f)));
+assert.deepEqual(actualNames,sourceNames,'engine contains missing or unexpected files');
+for (const rel of sourceNames) {
+ const src=path.join(root,rel), dst=path.join(engine,rel);
+ if(fs.lstatSync(src).isSymbolicLink()) assert.equal(fs.readlinkSync(dst),fs.readlinkSync(src),rel);
+ else assert.equal(hash(dst),hash(src),'source mismatch '+rel);
+}
 const nodeVersion=/^Bundled Node\.js (v\d+\.\d+\.\d+(?:-[\w.-]+)?): see Node-LICENSE\.txt\./.exec(fs.readFileSync(path.join(resources,'THIRD_PARTY_NOTICES.txt'),'utf8'))?.[1];
 assert.ok(nodeVersion,'missing bundled Node version notice');
 assert.equal(hash(path.join(resources,'Node-LICENSE.txt')),hash(path.join(root,'desktop/licenses',nodeVersion+'-Node-LICENSE.txt')),'wrong bundled Node license');

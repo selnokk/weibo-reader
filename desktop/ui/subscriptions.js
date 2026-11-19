@@ -1,7 +1,7 @@
 'use strict';
 (()=>{
  let entries=state.subscriptions||[],type='all',workspace=state.workspace||'',generation=0,ready=false,lastListRequest='',ledgerBlocked=false;
- const pending=new Map(),removing=new Map();state.subscriptions=entries;
+ const pending=new Map(),removing=new Map(),noticeRequests=new Map();state.subscriptions=entries;
  const key=(kind,id)=>kind+':'+id,kind=e=>e.targetKind||'user',id=e=>e.postId||e.uid;
  const status={waiting:'订阅中',running:'检查中',paused:'已暂停',queued:'排队中','budget-paused':'预算暂停','error-paused':'异常暂停','retry-wait':'等待重试','attention-required':'等待重试'};
  const statusStyle={waiting:'success',running:'running',queued:'running','error-paused':'error','budget-paused':'warning','retry-wait':'warning','attention-required':'warning'};
@@ -14,6 +14,12 @@
  function capture(k,v){const entry=subscriptionFor(k,v);return {workspace,generation,kind:k,id:v,exists:!!entry,source:entry?.source||'cli'};}
  function owns(c){const entry=subscriptionFor(c.kind,c.id);return current()&&c.workspace===workspace&&c.generation===generation&&!!entry===c.exists&&(!entry||(entry.source||'cli')===c.source);}
  const needsRecovery=e=>!!(e.blockedKinds?.length||e.recovery||Object.values(e.directionRetry||{}).some(retry=>retry?.attempts>0));
+ const directionLabel=kind=>kind==='sent'?'发出':kind==='received'?'收到':'博文评论';
+ function retryingDirection(e){
+  if(e.mode!=='both'||e.recovery)return null;
+  const retrying=['sent','received'].filter(kind=>e.directionRetry?.[kind]?.attempts>0||e.blockedKinds?.includes(kind));
+  return retrying.length===1?retrying[0]:null;
+ }
  const serviceBlocked=e=>e?.serviceBlocks?.some(s=>s.code==='IP_GEO_DENIED');
  function currentServiceIssues(e){
   
@@ -25,7 +31,7 @@
   const issues=currentServiceIssues(e),service=issues.length>0&&e.status!=='paused',code=e.recovery?.code||e.pauseCode;
   const blocked=e.blockedKinds||[],recoveryError=e.recovery?.code&&!['AUTO_RETRY','AUTO_INTERRUPTED','AUTO_STATE_RECOVERY'].includes(e.recovery.code);
   if(ledgerBlocked||e.status==='paused'||!service&&!blocked.length&&e.status!=='error-paused'&&!(e.status==='attention-required'&&code)&&!recoveryError)return [];
-  const text=service?'WeiboCLI 服务地区拒绝（IP_GEO_DENIED），费用仍待核对。'+(e.enabled?'订阅保持开启，按恢复间隔自动重试。':'订阅已暂停，可点击恢复重新开启。'):e.reason||e.directionMessage||code;
+  const text=ReaderAcquisitionFeedback.noticeSummary({code:service?'IP_GEO_DENIED':code||Object.values(e.directionRetry||{}).find(v=>v.code)?.code,enabled:e.enabled,localOnly:e.recovery?.localOnly});
   if(!text)return [];
   const receipts=service?issues.map(item=>[item.kind,item.roundId,item.requestId,item.receipt]).sort():[];
   const directions=blocked.map(kind=>[kind,e.directionRetry?.[kind]?.code,e.directionRetry?.[kind]?.lastRoundId]).filter(([,code,round])=>code||round).sort();
@@ -34,13 +40,21 @@
   const origin=receipts.length?receipts:e.recovery?.roundId||(directions.length?directions:e.lastRoundId||e.lastCheckAt||text);
   const key=JSON.stringify(['attention',service?'IP_GEO_DENIED':code,origin]);
   const oldVersion=JSON.stringify([e.lastRoundId,e.recovery?.roundId,e.recovery?.code,e.pauseCode,e.status,e.reason,e.directionMessage,e.blockedKinds,Object.entries(e.directionRetry||{}).map(([kind,retry])=>[kind,retry.code,retry.lastRoundId]),e.dataStates]);
-  const detail=[...new Set([e.reason,e.directionMessage])].filter(value=>value&&value!==text).join(' · ');
-  return [{text,detail,key,aliases:[JSON.stringify([service?'service':'reason',oldVersion])],source:e.source||'cli'}];
+  return [{text,key,aliases:[JSON.stringify([service?'service':'reason',oldVersion])],source:e.source||'cli'}];
+ }
+ function dismissMissing(c,notice){
+  if(!owns(c))return Promise.reject(Error('订阅已变化，请刷新后重试。'));
+  return new Promise((resolve,reject)=>{const requestId=crypto.randomUUID(),timer=setTimeout(()=>{noticeRequests.delete(requestId);reject(Error('关闭提示未能保存，请重试。'));},10000);noticeRequests.set(requestId,{resolve,reject,timer,c});send({action:'followMissingDismiss',workspace:c.workspace,requestId,uid:c.id,targetKind:c.kind,notice});});
+ }
+ function noticesFor(e){
+  const notices=attentionNotice(e),missing=e.missingNotice;
+  if(missing?.count>0){const c=capture(kind(e),id(e));notices.push({text:'少了 '+numeric(missing.count)+' 条正文',key:'subscription-missing:'+missing.token,source:e.source||'cli',dismissTitle:'关闭并重置提示计数，原始缺失记录保留',beforeDismiss:()=>dismissMissing(c,missing)});}
+  return notices;
  }
  const header=$('subscriptions-refresh').parentElement,headerActions=node('div','subscription-header-actions');
  header.append(headerActions);
  ReaderEntityActions.installClearNotices(headerActions,()=>current()?entries.flatMap(e=>
-  attentionNotice(e).map(notice=>ReaderEntityActions.listNoticeOptions(kind(e),id(e),notice))
+  noticesFor(e).map(notice=>ReaderEntityActions.listNoticeOptions(kind(e),id(e),notice))
  ):[]);
  headerActions.append($('subscriptions-refresh'));
  function serviceSettings(){view('settings');requestAnimationFrame(()=>$('service-account-card')?.scrollIntoView({block:'start',behavior:'smooth'}));}
@@ -64,7 +78,7 @@
  ledgerStatus.append(ledgerCopy,button('重试读取本地状态','button secondary',requestList));loadBox.after(ledgerStatus);
  function showLedgerBlock(){
   ledgerBlocked=true;ledgerStatus.hidden=false;
-  ledgerNotice.textContent='订阅费用账本暂时无法核实。原记录和启用设置已保留，请核对本地账本后重试读取。';
+  ledgerNotice.textContent='费用记录暂时无法读取，请重试。';
   ledgerNotice.setAttribute('role','alert');
   window.ReaderNotices?.decorate(ledgerNotice,{scope:workspace+'|subscriptions',key:'ledger-invalid:'+crypto.randomUUID()});
   window.subscriptionLedgerStatusChanged?.();
@@ -95,7 +109,6 @@
    const directions=e.mode==='both'?['sent','received']:[e.mode];
    const successDates=directions.map(kind=>[kind,Date.parse(e.successfulChecks?.[kind])]).filter(([,at])=>Number.isFinite(at)).sort((a,b)=>b[1]-a[1]);
    const [successKind,lastSuccess]=successDates[0]||[];
-   const directionLabel=kind=>kind==='sent'?'发出':kind==='received'?'收到':'博文评论';
    for(const [label,value,detail]of [
     ['最近成功检查',Number.isFinite(lastSuccess)?(directions.length>1?directionLabel(successKind)+' · ':'')+relativeTime(lastSuccess):'暂无',successDates.map(([kind,at])=>directionLabel(kind)+' '+dateText(at)).join(' · ')],
     ['最近保存新评论',e.lastNewAt?numeric(e.lastNewCount)+' 条':'暂无',e.lastNewAt?dateText(Date.parse(e.lastNewAt)):''],
@@ -107,7 +120,7 @@
    }
    card.append(facts);
    if(k==='user'||e.inbox?.unread!=null||e.inbox?.unavailable)facts.children[2].append(node('span','subscription-fact-detail subscription-unread',e.inbox?.unavailable?'未读统计暂不可用':(e.inbox?.unread||0)+(k==='post'?' 条未读评论':' 条未读互动')));
-   const notices=attentionNotice(e);
+   const notices=noticesFor(e);
    const actions=node('div','settings-actions');actions.append(button('设置','text-button',()=>{if(owns(c))window.openFollow(v,e.mode,k);}),button(e.enabled?'暂停':'恢复','text-button subscription-toggle',()=>toggle(c,!e.enabled)));
    actions.querySelector('.subscription-toggle').disabled=pending.has(key(k,v))||!!e.removing||ledgerBlocked&&!e.enabled;
    const remove=button(removing.has(key(k,v))||e.removing?'正在移除…':'删除订阅','text-button danger-button',()=>{if(!owns(c))return;const requestId=crypto.randomUUID();removing.set(key(k,v),{requestId,source:c.source});remove.disabled=true;remove.textContent='正在移除…';send({action:'followRemove',targetKind:k,uid:v,...(k==='post'?{postId:v}:{}),requestId});});remove.disabled=removing.has(key(k,v))||!!e.removing;actions.append(remove);card.append(actions);ReaderEntityActions.noticeSlot(card,k,v,notices);for(const control of card.querySelectorAll('button,summary'))control.dataset.subscriptionControl=control.matches('summary')?'reason':control.classList.contains('subscription-toggle')?'toggle':control.classList.contains('danger-button')?'remove':control.getAttribute('aria-label')||control.textContent;const previous=retained.get(card.dataset.subscriptionOwner);list.append(card);if(previous?.focus)for(const control of card.querySelectorAll('button,summary'))if(control.dataset.subscriptionControl===previous.focus)control.focus({preventScroll:true});
@@ -122,19 +135,25 @@
   let a={detail:''};
   if(blocked)a={badge:'检查受阻',warning:true,detail:'',next:'等待核对账本'};
   else if(e.recovery){
-   const recoveryText=e.recovery.localOnly?'正在恢复本地状态，尚未重新请求':'等待自动重试';
-   const recoveryNext=e.nextCheckAt?'下次尝试 '+dateText(Date.parse(e.nextCheckAt)):'等待安全条件';
-   const evidence=e.recovery.localOnly?'原始数据及启用意图保留':e.reason||'原始数据及启用意图保留';
-   a={badge:status[e.status],detail:recoveryText+' · '+recoveryNext+'；'+evidence};
-  }else if(recovering)a.detail=e.directionMessage||e.reason||'';
-  else if(ordinary)a.detail=e.reason||'';
-  if(!blocked&&recovering&&e.enabled){a.warning=true;if(e.status==='waiting')a.badge='等待重试';}
+   a={badge:status[e.status],detail:ReaderAcquisitionFeedback.noticeSummary({code:e.recovery.code,enabled:e.enabled,localOnly:e.recovery.localOnly})};
+  }else if(recovering)a.detail=ReaderAcquisitionFeedback.noticeSummary({code:currentServiceIssues(e).length?'IP_GEO_DENIED':e.pauseCode||Object.values(e.directionRetry||{}).find(v=>v.code)?.code,enabled:e.enabled});
+  else if(ordinary)a.detail=e.status==='running'?'正在检查更新。':e.status==='budget-paused'?'额度恢复后继续检查。':'正在等待检查。';
+  else if(e.enabled&&e.status==='waiting'&&e.noNewKinds?.length&&e.lastAdded===0)a.detail=ReaderAcquisitionFeedback.subscriptionEmptyNote(e);
+  if(!blocked&&recovering&&e.enabled){
+   a.warning=true;
+   if(e.status==='waiting'){
+    const retry=retryingDirection(e);
+    a.badge=retry?directionLabel(retry)+'待重试':'等待重试';
+    if(retry&&!currentServiceIssues(e).length){
+     const retryAt=Date.parse(e.directionRetry?.[retry]?.nextRetryAt);
+     if(Number.isFinite(retryAt))a.detail+=' '+directionLabel(retry)+'重试时间 '+dateText(retryAt)+'。';
+    }
+   }
+  }
   if(!blocked&&currentServiceIssues(e).length&&e.enabled&&e.status!=='running'){a.warning=true;a.badge='恢复等待';}
-  if(!blocked&&recovering&&!e.recovery?.localOnly&&e.directionMessage&&!a.detail?.includes(e.directionMessage))a.detail=[e.directionMessage,a.detail].filter(Boolean).join(' ');
   const pending=e.dataStates?e.dataStates.some(s=>s.pendingNew):e.pending;
-  const incomplete=pending?'仍有新增待续取，按已保存位置继续':'';
-  const history=e.dataStates?.some(s=>s.missingBodies)?'有历史正文缺失，见获取历史':'';
-  return {...a,detail:[a.detail,incomplete,history].filter(Boolean).join(' · ')};
+  const incomplete=pending&&!a.detail?'有待补区间。':'';
+  return {...a,detail:[a.detail,incomplete].filter(Boolean).join(' · ')};
  }
  function nextCheckDisplay(e,a,at){
   if(!e.enabled||e.status==='paused')return ['未安排',''];
@@ -151,6 +170,15 @@
   if(remaining<86400000)return [Math.ceil(remaining/3600000)+' 小时后',exact];
   return [Math.ceil(remaining/86400000)+' 天后',exact];
  }
+ function nextCheckLabel(e,at){
+  if(ledgerBlocked||!e.enabled||e.running||e.status!=='waiting'||e.recovery||e.mode!=='both')return '下次检查';
+  const planned=Date.parse(e.nextCheckAt),sent=Date.parse(e.directionRetry?.sent?.nextRetryAt),received=Date.parse(e.directionRetry?.received?.nextRetryAt);
+  if(![planned,sent,received].every(Number.isFinite))return '下次检查';
+  const due=Math.max(planned,at);
+  if(sent<=due&&received>due)return '下次检查 · 发出';
+  if(received<=due&&sent>due)return '下次检查 · 收到';
+  return '下次检查';
+ }
  function setText(node,text){
   if(node&&node.textContent!==text)node.textContent=text;
  }
@@ -166,11 +194,13 @@
    if(statusNode.className!==className)statusNode.className=className;
    const next=card.querySelector('[data-subscription-next]'),last=card.querySelector('[data-subscription-last] strong');
    const [relative,exact]=nextCheckDisplay(e,a,at);
+   const nextLabel=nextCheckLabel(e,at);
+   setText(next?.querySelector('.muted'),nextLabel);
    setText(next?.querySelector('strong'),relative);
    const nextDate=next?.querySelector('.subscription-fact-detail');
    setText(nextDate,exact);
    nextDate?.toggleAttribute('data-exact',!!exact);
-   const nextTitle=[relative,exact,a.detail].filter(Boolean).join(' · ');
+   const nextTitle=[nextLabel,relative,exact,a.detail].filter(Boolean).join(' · ');
    if(next&&next.title!==nextTitle)next.title=nextTitle;
    if(statusNode.title!==a.detail)statusNode.title=a.detail;
    if(e.lastCheckAt)setText(last,relativeTime(e.lastCheckAt));
@@ -181,6 +211,7 @@
   if(e.type==='library'){
    const changed=workspace!==e.workspace;
    if(changed||e.homeBlocked){
+    for(const r of noticeRequests.values()){clearTimeout(r.timer);r.reject(Error('资料目录已变化，请在当前目录操作。'));}noticeRequests.clear();
     clearLedgerBlock();workspace=e.workspace;generation++;ready=false;entries=[];state.subscriptions=[];pending.clear();removing.clear();lastListRequest='';
     if(changed){type='all';$('subscription-search').value='';}
     render();queueMicrotask(refreshToggles);
@@ -188,6 +219,7 @@
    return;
   }
   if(e.workspace&&e.workspace!==workspace||workspace!==state.workspace)return;
+  const request=noticeRequests.get(e.requestId);if(request&&['followMissingDismissed','followError'].includes(e.type)){if(e.type==='followMissingDismissed'&&(kind(e)!==request.c.kind||id(e)!==request.c.id))return;clearTimeout(request.timer);noticeRequests.delete(e.requestId);if(!owns(request.c))request.reject(Error('订阅已变化，请刷新后重试。'));else if(e.type==='followError')request.reject(Error(e.message||'关闭提示未能保存。'));else request.resolve();return;}
   if(e.type==='followState'){
    if(Array.isArray(e.entries))clearLedgerBlock();
    if(e.requestId&&e.requestId===lastListRequest)lastListRequest='';

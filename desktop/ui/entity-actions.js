@@ -280,7 +280,7 @@
   return !!owner&&owner.kind===kind&&owner.id===id&&scope.owns(owner)&&detailChoices.taskIds.has(taskId);
  }
  function renderHistoryContinuations(kind,id){const action=continuationButton(kind,id,{history:true});$('history-original-tasks').replaceChildren(...(action?[action]:[]));}
- function listNoticeOptions(kind,id,item){return {scope:state.workspace+'|'+kind+':'+id+'|'+(item.source||'unknown')+'|'+(item.scope||''),sharedKey:'list-notice:'+item.key,aliases:(item.aliases||[]).map(key=>'list-notice:'+key),persistent:item.persistent!==false&&['cli','crawler','unknown'].includes(item.source)};}
+ function listNoticeOptions(kind,id,item){return {scope:state.workspace+'|'+kind+':'+id+'|'+(item.source||'unknown')+'|'+(item.scope||''),sharedKey:'list-notice:'+item.key,aliases:(item.aliases||[]).map(key=>'list-notice:'+key),persistent:item.persistent!==false&&['cli','unknown'].includes(item.source),beforeDismiss:item.beforeDismiss};}
  function installClearNotices(host,items){
   const control=button('清除全部通知','button secondary clear-list-notices',async()=>{
    if(control.disabled||!state.workspace)return;
@@ -293,7 +293,7 @@
     const id=state.selection?.kind==='post'?ReaderUX.postId(currentTarget()):ReaderIdentity.user(state);
     if(id)renderContinuations(state.selection?.kind==='post'?'post':'user',id);
     if(count>=0)toast(count?'已清除全部通知':'暂无可清除的通知');
-   }finally{control.disabled=false;}
+   }catch(error){if(scope.owns(captured))toast(error.message||'关闭通知未完成，请重试。',true);}finally{control.disabled=false;}
   });
   control.title='隐藏此页面当前的通知，保留已保存内容和任务历史';
   host.append(control);return control;
@@ -304,7 +304,7 @@
  function actions(kind,id,{note=false}={}){const bar=node('div','entity-card-actions');bar.append(external(kind,id));if(note)bar.append(noteButton(kind,id));return bar;}
  // Reuse each page's existing detail button and preserve independent controls.
  function listRow(card,open){const owner=scope.capture(),selected=()=>{const selection=window.getSelection();return selection?.type==='Range'&&card.contains(selection.anchorNode);};card.classList.add('entity-list-row');card.setAttribute('role','listitem');card.addEventListener('click',event=>{if(event.target.closest('.user-open')&&selected()){event.preventDefault();event.stopPropagation();}},true);card.addEventListener('click',event=>{if(!scope.owns(owner)||event.target.closest('button,a,input,label,select,textarea,summary,details,.row-notice,.row-notices-popover,.entity-row-notices')||selected())return;open();});}
- function legacyTaskNoticeKey(task){const progress=value=>value?[value.kind,value.covered,value.budget,value.pending,value.pendingNew,value.targetCovered,value.caughtUp,value.resumable,value.reason,value.stopCode]:null,p=task.progressStatus;return JSON.stringify(['task',task.id,/^[a-f0-9]{64}$/.test(task.noticeToken||'')?task.noticeToken:[task.status,task.finishedAt,task.failureCode,task.reason,task.query?.mode,task.query?.source||'cli',task.query?._scopeId,task.query?.crawlerScope,p?[p.kind,p.resumable,p.targetCovered,p.dataState,p.missingBodyIds,(p.directions||[]).map(progress)]:null,task.summary?[task.summary.incomplete,task.summary.cancelled,task.summary.records,task.summary.addedRecords,(task.summary.sources||[]).map(source=>[source.kind,source.fetched,source.budget,source.failed,source.cancelled,source.reason,source.stopCode,progress(source.readProgress),source.update?.caughtUp,source.update?.protection?.latestSucceeded])]:null]]);}
+ function legacyTaskNoticeKey(task){const progress=value=>value?[value.kind,value.covered,value.budget,value.pending,value.pendingNew,value.targetCovered,value.caughtUp,value.resumable,value.reason,value.stopCode]:null,p=task.progressStatus;return JSON.stringify(['task',task.id,/^[a-f0-9]{64}$/.test(task.noticeToken||'')?task.noticeToken:[task.status,task.finishedAt,task.failureCode,task.reason,task.query?.mode,task.query?.source||'cli',task.query?._scopeId,null,p?[p.kind,p.resumable,p.targetCovered,p.dataState,p.missingBodyIds,(p.directions||[]).map(progress)]:null,task.summary?[task.summary.incomplete,task.summary.cancelled,task.summary.records,task.summary.addedRecords,(task.summary.sources||[]).map(source=>[source.kind,source.fetched,source.budget,source.failed,source.cancelled,source.reason,source.stopCode,progress(source.readProgress),source.update?.caughtUp,source.update?.protection?.latestSucceeded])]:null]]);}
 
  function taskNoticeKey(task){const summary=task.summary||{},sources=(summary.sources||[]).map(source=>{const p=source.readProgress||{},d=source.dataStatus||{},u=source.update||{};return [source.kind,source.fetched??p.covered,source.budget??p.budget,!!source.failed,!!source.cancelled,source.stopCode||source.autoStop?.code||'',source.reason||'',p.cursor||'',!!(p.pending??u.pending),!!(p.pendingNew??d.pendingNew??u.pending),!!(p.targetCovered??d.targetCovered)];});return JSON.stringify(['task-outcome-v2',task.id,task.query?.mode,task.status,!!summary.incomplete,!!summary.cancelled,summary.records,sources.length?sources:(task.progressStatus?.directions||[]).map(d=>[d.kind,d.covered,d.budget,!!d.pendingNew,!!d.targetCovered,d.reason||''])]);}
  function groupTasks(tasks){const groups=new Map();for(const task of tasks){const key=JSON.stringify([task.query?.source||'cli','',task.query?.mode,task.status,task.progressStatus?.targetCovered,task.progressStatus?.kind,(task.summary?.sources||[]).map(s=>[s.kind,s.stopCode||s.autoStop?.code||'',s.reason||'',!!s.failed,!!s.cancelled])]);const group=groups.get(key);if(group)group.count++;else groups.set(key,{task,count:1});}return [...groups.values()];}
@@ -313,7 +313,7 @@
   const resumable=tasks.filter(task=>canContinue(task)&&!task.noticeDismissed);
   return groupTasks(resumable).map(({task,count})=>({
    text:(interruptedTask(task)?'原任务意外中断':'待补区间')+(count>1?'（同类 '+count+' 项，详情见获取历史）':''),
-   detail:(isMiddleGap(task)?'需要时可从获取历史补齐。':text==='新旧数据之间有未读取区间'?'':detail)||task.summary?.sources?.map(source=>source.reason).filter(Boolean).join('；'),
+   detail:interruptedTask(task)?'可继续上次未完成的读取。':'需要时可从获取历史补齐。',
    source:task.query?.source||'cli',key:taskNoticeKey(task),aliases:[legacyTaskNoticeKey(task)],className:'home-pending',
    ...(isMiddleGap(task)?{onDismiss:renderCurrentContinuations}:{})
   }));
@@ -414,7 +414,7 @@
   const owner=scope.capture(),slot=node('div','entity-row-notices'),toggle=button('i','row-notices-toggle',event=>{event.preventDefault();event.stopPropagation();if(!scope.owns(owner)||!card.isConnected)return;if(rowPopover?.panel===panel){closeRowNotices();return;}closeRowNotices();panel.hidden=false;toggle.setAttribute('aria-expanded','true');const anchor=toggle.getBoundingClientRect(),box=panel.getBoundingClientRect();panel.style.left=Math.max(12,Math.min(anchor.right-box.width,innerWidth-box.width-12))+'px';panel.style.top=Math.max(12,anchor.bottom+box.height+8<=innerHeight?anchor.bottom+8:anchor.top-box.height-8)+'px';rowPopover={panel,toggle};}),panel=node('div','row-notices-popover');
   panel.hidden=true;panel.setAttribute('role','region');panel.setAttribute('aria-label','当前对象的提示');toggle.hidden=true;toggle.setAttribute('aria-label','查看当前对象的提示');toggle.setAttribute('aria-expanded','false');toggle.title='查看提示，可单独关闭';slot.append(toggle,panel);
   const sync=()=>{toggle.hidden=![...panel.children].some(line=>!line.hidden);if(toggle.hidden&&rowPopover?.panel===panel)closeRowNotices();};
-  for(const item of notices){if(!item.text)continue;const line=node('span','row-notice '+(item.className||''),item.text);if(item.detail&&['user','post'].includes(kind))line.append(node('span','entity-notice-detail',item.detail));line.title=item.detail||item.text;line.setAttribute('aria-label',line.title);panel.append(line);window.ReaderNotices?.decorate(line,{...listNoticeOptions(kind,id,item),title:'仅隐藏这条提示，任务、数据、费用和订阅状态保留',onVisibilityChange:sync,onDismiss:()=>{if(scope.owns(owner))item.onDismiss?.();}});if(item.detail)line.title=item.text+' · '+item.detail;}
+  for(const item of notices){if(!item.text)continue;const line=node('span','row-notice '+(item.className||''),item.text);if(item.detail&&['user','post'].includes(kind))line.append(node('span','entity-notice-detail',item.detail));line.title=item.detail||item.text;line.setAttribute('aria-label',line.title);panel.append(line);window.ReaderNotices?.decorate(line,{...listNoticeOptions(kind,id,item),title:item.dismissTitle||'仅隐藏这条提示，任务、数据、费用和订阅状态保留',onVisibilityChange:sync,onError:error=>{if(scope.owns(owner))toast(error.message||'关闭提示未完成，请重试。',true);},onDismiss:()=>{if(scope.owns(owner))item.onDismiss?.();}});if(item.detail)line.title=item.text+' · '+item.detail;}
   (card.querySelector('.home-user-facts,.post-card-facts,.subscription-facts')||card).append(slot);sync();return slot;
  }
 

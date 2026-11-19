@@ -117,7 +117,7 @@ function renderServiceLogin() {
     $('service-login-message').hidden = false;
     $('service-login-message').textContent = login.message;
     if (login.failed) window.ReaderNotices?.decorate($('service-login-message'), {scope: login.workspace + '|service-login', key: login.requestId || 'engine'});
-    $('service-login-cancel').hidden = !serviceLoginBusy();
+    $('service-login-cancel').hidden = !serviceLoginBusy() || login.operation === 'logout';
     $('service-login-cancel').disabled = !!login.cancelling;
 }
 function serviceLoginEvent(event, ownership) {
@@ -125,6 +125,17 @@ function serviceLoginEvent(event, ownership) {
     if (!login || !serviceScope.owns(login)) return false;
     const engineStopped = ['engineStopped', 'engineTransportError'].includes(event.type) && ownership.task?.requestId === login.requestId;
     if (!engineStopped && (ownership.route !== 'task' || ownership.task?.requestId !== login.requestId)) return false;
+    if(login.operation==='logout'){
+        if(event.type==='serviceLogoutResult'){
+            login.localCleared=event.localCleared===true;login.remoteConfirmed=event.remoteConfirmed===true;
+            if(login.localCleared){state.account=null;state.displayBalance=null;state.serviceLoggedOut=true;state.serviceAccountRequest=null;state.balanceQueryState='logged-out';topBalance(null,'','未登录');$('balance-login').hidden=false;window.ReaderNotices?.reset($('account-info'));$('account-info').hidden=false;$('account-info').textContent='已退出登录';window.ReaderSettingsStatus?.serviceAccount(null,'signed-out');}
+        }else if(event.type==='finished'||engineStopped||event.type==='error'){
+            login.failed=!login.localCleared;login.heading=login.localCleared?'已退出登录':'退出未完成';
+            login.message=login.localCleared?(login.remoteConfirmed?'重新登录后可继续联网读取。':'已退出本机登录，服务端退出状态暂未确认。'):'请稍后重试退出登录。';
+            if(engineStopped)state.engineAvailable=false;
+        }else{login.heading='正在退出登录';login.message='正在结束当前服务账户会话。';}
+        setBusy({accountOnly:true});renderServiceLogin();return true;
+    }
     if (engineStopped) {
         state.engineAvailable = false;
         login.failed = true;
@@ -147,14 +158,15 @@ function serviceLoginEvent(event, ownership) {
     if (event.type === 'finished' && event.code === 0 && !event.cancelled) send({ action: 'account', loginRequestId: login.requestId });
     return true;
 }
-function send(value) { value = workspaceChannel.bind(value); if (['resumeTask', 'login'].includes(value.action)) {
-    if (value.action === 'login' && !state.serviceWorkspaceAccepted) {
+function send(value) { value = workspaceChannel.bind(value); if (['resumeTask', 'login','logout'].includes(value.action)) {
+    const auth=['login','logout'].includes(value.action),logout=value.action==='logout';
+    if (auth && !state.serviceWorkspaceAccepted) {
         state.serviceLogin = { localOnly: true, heading: '登录尚未开始', message: '正在准备本地资料目录，请稍后再登录；未发起登录或内容请求。' };
         view('settings'); renderServiceLogin();
         return;
     }
     if (state.engineAvailable === false) {
-        if (value.action === 'login') {
+        if (auth) {
             state.serviceLogin = serviceScope.capture({ failed: true, heading: '登录未启动', message: '运行引擎已停止，请重新打开应用后登录；未读取微博内容。' });
             view('settings'); renderServiceLogin();
         } else toast('运行引擎已停止，请重新打开应用后重试。', true);
@@ -166,14 +178,14 @@ function send(value) { value = workspaceChannel.bind(value); if (['resumeTask', 
         return;
     }
     value = { ...value, requestId };
-    if (value.action === 'login') {
+    if (auth) {
         rememberFilters();
         state.serviceAccountRequest = null;
         state.balanceQueryState = 'idle';
         topBalance(state.displayBalance ?? null, state.displayBalance == null ? '' : '上次查询值', '尚未查询');
         if (state.account) $('account-info').textContent = '上次查询结果（本次授权后尚未核实）：\n' + serviceAccountText(state.account);
         window.ReaderSettingsStatus?.serviceAccount(null, 'authorization');
-        state.serviceLogin = serviceScope.capture({ requestId, heading: '准备登录', message: '正在准备服务账户登录，不会读取微博内容。' });
+        state.serviceLogin = serviceScope.capture({ requestId,operation:logout?'logout':'login', heading:logout?'正在退出登录':'准备登录', message:logout?'正在结束当前服务账户会话。':'正在准备服务账户登录，不会读取微博内容。' });
         view('settings'); setBusy({ accountOnly: true }); renderServiceLogin();
     } else {
         state.progressQuery = null; setBusy(); status('准备续读', 'running'); setProgress('恢复原任务', null, '');
@@ -476,7 +488,7 @@ function renderRecentTaskCard(q = query()) {
 function syncTaskCard(q) { const key = ReaderDataQuery.key(q); if (!state.finishingTask && !progressActive() && state.cardFormKey !== key)
     resetTaskCard(q); syncProgressMotion(); }
 function status(text, cls = '') { $('status-pill').textContent = text; $('status-pill').className = 'status-pill' + (cls ? ' ' + cls : ''); }
-function setBusy({ accountOnly = false } = {}) { const projected = taskEvents.snapshot(); state.busy = projected.busy; state.starting = projected.starting; state.activeId = projected.activeId; const value = projected.busy, login = serviceLoginBusy(); $('active-task').hidden = !value; $('active-task').textContent = login ? '登录进行中 · 返回账户设置' : '任务进行中 · 返回查看'; all('#query-form input,#query-form select,#query-form button,[data-category]').forEach(el => el.disabled = false); $('login').disabled = value; $('balance-login').disabled = value; $('check-account').disabled = login || state.balanceQueryState === 'loading'; $('refresh-balance').disabled = login || state.balanceQueryState === 'loading'; $('choose-workspace').disabled = value; $('start').disabled = value && state.task === 'sync'; $('continue-update').disabled = value; $('start').hidden = value && state.task === 'sync' && !login; $('stop').hidden = !value || login; if (!accountOnly) { if (!value) syncProgressMotion(); updateForm(); } renderFavorites(); }
+function setBusy({ accountOnly = false } = {}) { const projected = taskEvents.snapshot(); state.busy = projected.busy; state.starting = projected.starting; state.activeId = projected.activeId; const value = projected.busy, login = serviceLoginBusy(); $('active-task').hidden = !value; $('active-task').textContent = login ? (state.serviceLogin?.operation==='logout'?'正在退出登录':'登录进行中 · 返回账户设置') : '任务进行中 · 返回查看'; all('#query-form input,#query-form select,#query-form button,[data-category]').forEach(el => el.disabled = false); $('login').disabled = value; $('balance-login').disabled = value; $('service-logout').disabled = value || !state.serviceWorkspaceAccepted || state.serviceLoggedOut === true || !state.account && state.balanceQueryState !== 'error' || state.balanceQueryState === 'loading'; $('service-logout').textContent = login && state.serviceLogin?.operation === 'logout' ? '正在退出…' : '退出登录'; $('check-account').disabled = login || state.balanceQueryState === 'loading'; $('refresh-balance').disabled = login || state.balanceQueryState === 'loading'; $('choose-workspace').disabled = value; $('start').disabled = value && state.task === 'sync'; $('continue-update').disabled = value; $('start').hidden = value && state.task === 'sync' && !login; $('stop').hidden = !value || login; if (!accountOnly) { if (!value) syncProgressMotion(); updateForm(); } renderFavorites(); }
 function renderEntityInventory() {
     const q={target:currentTarget(),mode:mode()}, previous=entityStatus.snapshot().key, request=entityStatus.enter(q,state.workspace,state.view==='create'&&!!state.workspace);
     if(previous!==entityStatus.snapshot().key)state.cardFormKey=null;
@@ -846,6 +858,7 @@ window.weiboReceive = function (event) {
     if (['account', 'accountError', 'accountLoading'].includes(event.type)) {
         if (!state.serviceWorkspaceAccepted) return;
         const request = state.serviceAccountRequest, active = taskEvents.snapshot();
+        if(state.serviceLoggedOut&&!request)return;
         if (event.requestId ? !(request?.requestId === event.requestId && serviceScope.owns(request, event)) && !(active.requestId === event.requestId && !!active.query) : !!request)
             return;
     }
@@ -988,7 +1001,9 @@ window.weiboReceive = function (event) {
             window.ReaderNotices?.reset($('account-info'));
             $('account-info').hidden = false;
             state.account = event;
+            state.serviceLoggedOut=false;
             state.balanceQueryState = 'ready';
+            $('service-logout').disabled=state.busy;
             topBalance(event.balance, event.balance == null ? '' : '已核实', '余额未返回');
             $('balance-login').hidden = true;
             $('account-info').textContent = serviceAccountText(event);
@@ -999,6 +1014,7 @@ window.weiboReceive = function (event) {
             break;
         case 'accountError':
             state.balanceQueryState = 'error';
+            $('service-logout').disabled=state.busy||state.serviceLoggedOut===true;
             topBalance(event.authenticationNeeded ? null : state.displayBalance ?? null, !event.authenticationNeeded && state.displayBalance != null ? '查询失败 · 上次显示值' : '', event.authenticationNeeded ? '未登录' : '查询失败');
             $('balance-login').hidden = !event.authenticationNeeded;
             $('account-info').textContent = event.message;
@@ -1306,6 +1322,7 @@ for (const id of ['open-output', 'settings-open-output'])
     $(id).addEventListener('click', () => send({ action: 'output' }));
 for (const id of ['login', 'balance-login'])
     $(id).addEventListener('click', () => send({ action: 'login' }));
+$('service-logout').addEventListener('click', () => send({ action: 'logout' }));
 for (const id of ['check-account', 'refresh-balance'])
     $(id).addEventListener('click', () => send({ action: 'account' }));
 $('choose-workspace').addEventListener('click', () => send({ action: 'chooseWorkspace' }));

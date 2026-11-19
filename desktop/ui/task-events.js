@@ -1,7 +1,7 @@
 'use strict';
 // This owner is independent of the selected page and of presentation busy flags.
 (function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory();else root.ReaderTaskEvents=factory();})(typeof globalThis!=='undefined'?globalThis:this,()=>{
- const scoped=new Set(['plan','collection','phase','progress','credits','summary','source','report','stopping','log','target','autoSafety']);
+ const scoped=new Set(['plan','collection','phase','progress','credits','summary','source','report','stopping','log','target','autoSafety','serviceLogoutResult']);
  const clone=value=>value==null?null:JSON.parse(JSON.stringify(value));
  function freeze(value){if(value&&typeof value==='object'){for(const item of Object.values(value))freeze(item);Object.freeze(value);}return value;}
  function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])]));return value;}

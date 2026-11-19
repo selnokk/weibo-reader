@@ -9,6 +9,20 @@
  const uncertain=s=>s.stopCode&&boundary.has(s.stopCode)||s.dataStatus?.unknownMissing||s.dataStatus?.unknownTimeIds?.length||s.dataStatus?.progressConflict||s.located===false||
   (s.coverageUnverified||s.dataStatus?.coverageUnverified)&&!knownMissing(s);
  const commentDirections={both:['sent','received'],sent:['sent'],received:['received']};
+ function subscriptionEmptyNote(entry,kind){
+  const states=entry.dataStates||entry.directions;
+  const pending=states?.length?states.some(s=>(!kind||s.kind===kind)&&(s.pendingNew??s.dataStatus?.pendingNew??s.update?.pending)):entry.pending;
+  return pending?'有待补区间。':'本轮暂无新增';
+ }
+ function noticeSummary({code='',enabled=true,localOnly=false}={}){
+  if(localOnly)return '正在恢复本地状态，请稍候。';
+  if(code==='IP_GEO_DENIED')return '服务暂不支持当前地区'+(enabled?'，稍后自动重试。':'。');
+  if(['AUTH_REQUIRED','MISSING_TOKEN','UNAUTHORIZED'].includes(code))return '登录状态需要更新，请前往账户设置。';
+  if(code==='AUTO_DAILY_BUDGET')return '本期额度已用完，额度恢复后继续。';
+  if(/^CLI_ACCOUNT_|^AUTO_ACCOUNT/.test(code)||code==='AUTO_BALANCE_UNKNOWN')return enabled?'服务账户暂时无法查询，稍后自动重试。':'服务账户暂时无法查询。';
+  if(code==='AUTO_OUTCOME_UNKNOWN')return enabled?'上次读取结果待确认，稍后自动检查。':'上次读取结果待确认。';
+  return enabled?'本轮检查未完成，稍后自动重试。':'检查未完成，可稍后重试。';
+ }
  function coveredWithMissingBodies(sources,mode){
   const expected=commentDirections[String(mode||'').replace(/^comments-/,'')];
   return !!expected&&expected.length===sources.length&&expected.every(kind=>sources.some(s=>s.kind===kind))&&sources.every(s=>{
@@ -73,5 +87,5 @@
   const pending=dataStatus?dataStatus.pendingNew||!dataStatus.targetCovered&&readProgress?.pending:readProgress?.pending;
   return !!(pending||update?.pending&&!update.caughtUp);
  }
- return {describe,hasContinuation,isMiddleGap,interruptedTask,continuationLabel};
+ return {describe,hasContinuation,isMiddleGap,interruptedTask,continuationLabel,noticeSummary,subscriptionEmptyNote};
 });

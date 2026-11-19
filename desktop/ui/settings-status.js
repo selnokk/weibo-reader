@@ -58,9 +58,9 @@
  function serviceAccount(account, status) {
   const brief = $('service-account-brief'), services = {formal_active:'正式服务', trial_active:'体验服务'};
   if (status === 'ready') lastAccount = account;
-  if (status === 'error' || status === 'reset') lastAccount = null;
-  if (status !== 'loading') serviceFields(lastAccount ? [lastAccount.username || '未提供', lastAccount.balance == null ? '暂不可用' : numeric(lastAccount.balance) + ' credits', services[lastAccount.service] || lastAccount.service || '未提供'] : ['—', '—', status === 'error' ? '查询失败' : '尚未查询']);
-  brief.textContent = status === 'loading' ? '正在查询账户与余额…' : status === 'authorization' && lastAccount ? '上次查询 · 授权后待核实' : status === 'ready' ? '服务账户已核实' : lastAccount ? '上次查询结果' : '';
+  if (status === 'error' || status === 'reset' || status === 'signed-out') lastAccount = null;
+  if (status !== 'loading') serviceFields(lastAccount ? [lastAccount.username || '未提供', lastAccount.balance == null ? '暂不可用' : numeric(lastAccount.balance) + ' credits', services[lastAccount.service] || lastAccount.service || '未提供'] : ['—', '—', status === 'signed-out' ? '未登录' : status === 'error' ? '查询失败' : '尚未查询']);
+  brief.textContent = status === 'signed-out' ? '' : status === 'loading' ? '正在查询账户与余额…' : status === 'authorization' && lastAccount ? '上次查询 · 授权后待核实' : status === 'ready' ? '服务账户已核实' : lastAccount ? '上次查询结果' : '';
   brief.hidden = !brief.textContent;
   servicePanel.toggleAttribute('data-show-brief', !brief.hidden);
  }

@@ -18,7 +18,7 @@ function waiting(e,round,at,{code='AUTO_RETRY',local=false,random=Math.random,or
  e.nextCheckAt=e.enabled?new Date(Math.max(retryAt,notBefore,Number(e.restUntil)||0)).toISOString():null;
  e.reason=local?'正在核对原请求与本地保存证据；安全条件恢复后自动继续，未决请求不会重复发送':'本轮检查未完成；已保留订阅，稍后自动重试';
 }
-const {complete,verifyComplete}=require('../lib/subscription-response-proof');
+const {complete,verifyComplete,verifyPendingResponse}=require('../lib/subscription-response-proof');
 function replay(base,dir,round,q,journal,invalidate){
  const J=require('../lib/request-journal'),root=J.folder(dir);
  if(!fs.existsSync(root))return false;
@@ -76,7 +76,7 @@ function inspectWork(base,entry,dir,excludeKinds){
   for(const q of round.requests||[]){
    if(excludeKinds.has(q.kind)||!['reserved','unknown'].includes(q.status))continue;
    try{
-    if(complete(q))verifyComplete(base,dir,round,q,{journal});
+    if(complete(q))verifyPendingResponse(base,dir,round,q,{journal});
     else{
      const rejection=S.rejection(base,dir,round,q,{journal});
      if(rejection){

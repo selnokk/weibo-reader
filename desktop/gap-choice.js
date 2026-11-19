@@ -46,7 +46,7 @@ function previewFuture(base,input,{now=Date.now}={}){
 }
 function futureCandidates(base,{uid,kind,limit=20}){
  if(typeof uid!=='string'||!/^\d{5,20}$/.test(uid)||!['sent','received'].includes(kind)||!Number.isSafeInteger(limit)||limit<1||limit>20)throw Error('候选任务的用户、方向或数量无效');
- const candidates=[],warnings=[],tasks=require('./user-workspace').tasks(base).filter(t=>t.uid===uid&&t.query?.source!=='crawler'&&['comments-'+kind,'comments-both'].includes(t.query?.mode)).slice(0,80);
+ const candidates=[],warnings=[],tasks=require('./user-workspace').tasks(base).filter(t=>t.uid===uid&&(t.query?.source||'cli')==='cli'&&['comments-'+kind,'comments-both'].includes(t.query?.mode)).slice(0,80);
  for(const task of tasks){
   if(candidates.length>=limit)break;
   try{const evidence=Proof.manualEvidence(base,{uid,kind,taskId:task.id});if(Proof.usedManual(base,evidence.dir,uid,kind,task.id,evidence.taskBinding))continue;candidates.push({taskId:task.id,scope:evidence.scope,uid,kind,source:'cli',targetKind:'user',status:task.status,startedAt:task.startedAt,finishedAt:task.finishedAt||null,head:evidence.proof.head,checkedAt:evidence.proof.checkedAt,responseHash:evidence.proof.ref.hash});}
@@ -169,7 +169,7 @@ function reviewPending(base,retry,message='忽略区间的本地操作尚待安�
  return issues;
 }
 function blockedKinds(issues,entry){
- if(entry?.targetKind==='post'||entry?.source==='crawler')return [];
+ if(entry?.targetKind==='post'||(entry?.source||'cli')!=='cli')return [];
  const kinds=entry?.mode==='sent'||entry?.mode==='received'?[entry.mode]:['sent','received'];
  return kinds.filter(kind=>issues.some(issue=>!issue.uid||issue.uid===entry?.uid&&(!issue.kinds||issue.kinds.includes(kind))));
 }
